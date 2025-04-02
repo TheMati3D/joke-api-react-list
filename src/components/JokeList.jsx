@@ -1,9 +1,9 @@
-import React, { useState, useEffect, useCallback } from 'react';
+import React, { useState, useEffect, useCallback, useMemo } from 'react';
 import { FixedSizeList as List } from 'react-window';
 import { loadJokesFromStorage, saveJokesToStorage, clearJokesFromStorage } from '../utils/localStorage';
 import './JokeList.css';
 
-// Dostępne kategorie żartów z JokeAPI
+// Available joke categories
 const CATEGORIES = [
   'Programming', 
   'Miscellaneous', 
@@ -13,13 +13,16 @@ const CATEGORIES = [
   'Christmas'
 ];
 
-// Funkcja do ograniczenia atrybutów dla localStorage (zmniejszona liczba pól)
+// Constants
+const STORAGE_PREFIX = 'jokes';
+const JOKES_PER_FETCH = 50;
+
+// Function to limit attributes for localStorage (reduced number of fields)
 const limitAttributes = (joke) => {
+  const summaryText = joke.type === 'twopart' ? joke.setup : joke.joke;
   return {
     id: joke.id,
-    summary: joke.type === 'twopart' ? 
-      `${joke.setup.substring(0, 50)}...` : 
-      joke.joke.substring(0, 50) + '...',
+    summary: summaryText ? `${summaryText.substring(0, 50)}...` : '',
     category: joke.category,
     type: joke.type
   };
@@ -33,18 +36,27 @@ export const JokeList = () => {
   const [fromCache, setFromCache] = useState(false);
   const [lastUpdated, setLastUpdated] = useState(null);
 
-  // Funkcja do pobierania żartów
-  const fetchJokes = useCallback(async (selectedCategory, forceRefresh = false) => {
-    const storageKey = `jokes:${selectedCategory}`;
-    
+  // Generate storage key based on category
+  const storageKey = useMemo(() => `${STORAGE_PREFIX}:${category}`, [category]);
+  const timestampKey = useMemo(() => `${storageKey}:timestamp`, [storageKey]);
+
+  // Function to format date
+  const formatDate = useCallback((timestamp) => {
+    return new Date(timestamp).toLocaleString();
+  }, []);
+
+  // Function to fetch jokes
+  const fetchJokes = useCallback(async (forceRefresh = false) => {
     if (!forceRefresh) {
-      // Sprawdź czy dane są w localStorage
+      // Check if data is in localStorage
       const cachedJokes = loadJokesFromStorage(storageKey);
-      if (cachedJokes && cachedJokes.length > 0) {
+      const cachedTimestamp = localStorage.getItem(timestampKey);
+      
+      if (cachedJokes?.length > 0) {
         console.log('Data loaded from localStorage (limited attributes)');
         setJokes(cachedJokes);
         setFromCache(true);
-        setLastUpdated(new Date(localStorage.getItem(`${storageKey}:timestamp`) || Date.now()).toLocaleString());
+        setLastUpdated(formatDate(cachedTimestamp || Date.now()));
         setLoading(false);
         return;
       }
@@ -55,7 +67,7 @@ export const JokeList = () => {
     setFromCache(false);
     
     try {
-      const apiUrl = `https://v2.jokeapi.dev/joke/${selectedCategory}?type=single,twopart&amount=50`;
+      const apiUrl = `https://v2.jokeapi.dev/joke/${category}?type=single,twopart&amount=${JOKES_PER_FETCH}`;
       console.log('Fetching jokes from API:', apiUrl);
       
       const response = await fetch(apiUrl);
@@ -69,7 +81,7 @@ export const JokeList = () => {
         throw new Error(data.message || 'Unknown API error');
       }
       
-      // Normalizacja danych - upewnij się, że zawsze otrzymujesz tablicę
+      // Normalize data - ensure it's always an array
       let jokesArray = [];
       if (data.jokes && Array.isArray(data.jokes)) {
         jokesArray = data.jokes;
@@ -81,7 +93,7 @@ export const JokeList = () => {
         throw new Error('No jokes found in the selected category');
       }
       
-      // Pełne dane do wyświetlenia
+      // Full data for display
       const processedJokes = jokesArray.map(joke => ({
         id: joke.id,
         joke: joke.joke || null,
@@ -92,14 +104,16 @@ export const JokeList = () => {
         flags: joke.flags
       }));
       
-      // Zapisz pełne dane do stanu aplikacji
+      // Save full data to app state
       setJokes(processedJokes);
-      setLastUpdated(new Date().toLocaleString());
       
-      // Zapisz ograniczone dane do localStorage
+      const now = Date.now();
+      setLastUpdated(formatDate(now));
+      
+      // Save limited data to localStorage
       const limitedJokes = processedJokes.map(limitAttributes);
       saveJokesToStorage(storageKey, limitedJokes);
-      localStorage.setItem(`${storageKey}:timestamp`, Date.now().toString());
+      localStorage.setItem(timestampKey, now.toString());
       
       console.log('Saved limited data to localStorage');
     } catch (error) {
@@ -109,33 +123,31 @@ export const JokeList = () => {
     } finally {
       setLoading(false);
     }
-  }, []);
+  }, [category, storageKey, timestampKey, formatDate]);
 
-  // Zmiana kategorii
+  // Category change handler
   const handleCategoryChange = (event) => {
-    const newCategory = event.target.value;
-    setCategory(newCategory);
-    fetchJokes(newCategory);
+    setCategory(event.target.value);
   };
 
-  // Wymuś odświeżenie z API
+  // Force refresh from API
   const handleRefresh = () => {
-    fetchJokes(category, true);
+    fetchJokes(true);
   };
 
-  // Wyczyść pamięć podręczną dla bieżącej kategorii
+  // Clear cache for current category
   const handleClearCache = () => {
-    clearJokesFromStorage(`jokes:${category}`);
-    localStorage.removeItem(`jokes:${category}:timestamp`);
-    fetchJokes(category, true);
+    clearJokesFromStorage(storageKey);
+    localStorage.removeItem(timestampKey);
+    fetchJokes(true);
   };
 
-  // Pobierz żarty przy pierwszym renderowaniu
+  // Fetch jokes on category change
   useEffect(() => {
-    fetchJokes(category);
+    fetchJokes(false);
   }, [category, fetchJokes]);
 
-  // Komponent renderujący pojedynczy element na liście
+  // Render joke row component
   const JokeRow = ({ index, style }) => {
     const joke = jokes[index];
     
@@ -145,7 +157,7 @@ export const JokeList = () => {
       <div className="joke-item" style={style}>
         <div className="joke-content">
           {fromCache ? (
-            // Widok z danymi z localStorage (ograniczone atrybuty)
+            // View with data from localStorage (limited attributes)
             <div>
               <p className="joke-summary">{joke.summary}</p>
               <div className="joke-meta">
@@ -155,7 +167,7 @@ export const JokeList = () => {
               </div>
             </div>
           ) : (
-            // Widok z pełnymi danymi z API
+            // View with full data from API
             <div>
               {joke.type === 'twopart' ? (
                 <>
@@ -168,12 +180,14 @@ export const JokeList = () => {
               <div className="joke-meta">
                 <span className="joke-category">Category: {joke.category}</span>
                 <span className="joke-id">ID: {joke.id}</span>
-                <span className="joke-flags">
-                  {Object.entries(joke.flags || {})
-                    .filter(([_, value]) => value)
-                    .map(([key]) => key)
-                    .join(', ')}
-                </span>
+                {joke.flags && Object.values(joke.flags).some(flag => flag) && (
+                  <span className="joke-flags">
+                    Flags: {Object.entries(joke.flags)
+                      .filter(([_, value]) => value)
+                      .map(([key]) => key)
+                      .join(', ')}
+                  </span>
+                )}
               </div>
             </div>
           )}
@@ -205,6 +219,7 @@ export const JokeList = () => {
             onClick={handleRefresh}
             className="refresh-button"
             disabled={loading}
+            aria-label="Refresh jokes from API"
           >
             Refresh from API
           </button>
@@ -213,6 +228,7 @@ export const JokeList = () => {
             onClick={handleClearCache}
             className="clear-cache-button"
             disabled={loading}
+            aria-label="Clear cached jokes"
           >
             Clear Cache
           </button>
@@ -220,21 +236,23 @@ export const JokeList = () => {
       </div>
 
       <div className={`data-source-indicator ${fromCache ? 'from-cache' : 'from-api'}`}>
-        {fromCache ? 'Data loaded from LocalStorage (limited attributes)' : 'Data fetched from API (full attributes)'}
+        <span>
+          {fromCache ? 'Data loaded from LocalStorage (limited attributes)' : 'Data fetched from API (full attributes)'}
+        </span>
         {lastUpdated && <span className="last-updated">Last updated: {lastUpdated}</span>}
       </div>
 
       {loading ? (
-        <div className="loading-indicator">
-          <div className="loading-spinner"></div>
+        <div className="loading-indicator" aria-live="polite">
+          <div className="loading-spinner" aria-hidden="true"></div>
           <p>Loading jokes...</p>
         </div>
       ) : error ? (
-        <div className="error-message">
+        <div className="error-message" role="alert">
           Error: {error}
         </div>
       ) : jokes.length === 0 ? (
-        <div className="empty-message">
+        <div className="empty-message" role="status">
           No jokes found in the selected category
         </div>
       ) : (
